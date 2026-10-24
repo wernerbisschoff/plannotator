@@ -29,6 +29,8 @@ export function useDiffFreshness({
   snapshotId,
   onAgentCwd,
   onBaseBehindRemote,
+  autoRefresh,
+  onStale,
 }: {
   enabled: boolean;
   /** Identity of the current diff snapshot (e.g. the rawPatch string). A new
@@ -49,6 +51,10 @@ export function useDiffFreshness({
    * omitted) — the local origin/<default> tracking ref is behind the actual
    * remote, i.e. the baseline needs a fetch. */
   onBaseBehindRemote?: (behind: boolean) => void;
+  /** Live mode: call onStale once per new stale fingerprint instead of only
+   * showing the banner. Caller refreshes when safe (no open drafts). */
+  autoRefresh?: boolean;
+  onStale?: () => void;
 }): DiffFreshness {
   const [staleFingerprint, setStaleFingerprint] = useState<string | null>(null);
   const [dismissedFingerprint, setDismissedFingerprint] = useState<string | null>(null);
@@ -57,6 +63,11 @@ export function useDiffFreshness({
   onAgentCwdRef.current = onAgentCwd;
   const onBaseBehindRemoteRef = useRef(onBaseBehindRemote);
   onBaseBehindRemoteRef.current = onBaseBehindRemote;
+  const autoRefreshRef = useRef(autoRefresh);
+  autoRefreshRef.current = autoRefresh;
+  const onStaleRef = useRef(onStale);
+  onStaleRef.current = onStale;
+  const firedFingerprintRef = useRef<string | null>(null);
 
   // New snapshot → clean slate. snapshotId is part of snapshot identity too:
   // a new snapshot can reuse the same patch TEXT with a different id (mode
@@ -65,6 +76,7 @@ export function useDiffFreshness({
   useEffect(() => {
     setStaleFingerprint(null);
     setDismissedFingerprint(null);
+    firedFingerprintRef.current = null;
   }, [resetKey, snapshotId]);
 
   useEffect(() => {
@@ -98,7 +110,12 @@ export function useDiffFreshness({
           // Keep polling even while stale: a reverted edit flips back to
           // fresh, and a FURTHER change updates the fingerprint so a
           // dismissed notice can reappear.
-          setStaleFingerprint(data.fresh ? null : data.fingerprint ?? 'stale');
+          const next = data.fresh ? null : data.fingerprint ?? 'stale';
+          setStaleFingerprint(next);
+          if (next && autoRefreshRef.current && firedFingerprintRef.current !== next) {
+            firedFingerprintRef.current = next;
+            onStaleRef.current?.();
+          }
           // PR mode re-advertises the live local checkout each probe; non-PR
           // probes omit the field entirely (leave agentCwd untouched).
           if ('agentCwd' in data) onAgentCwdRef.current?.(data.agentCwd ?? null);

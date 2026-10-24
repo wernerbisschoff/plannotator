@@ -3599,8 +3599,16 @@ const ReviewApp: React.FC = () => {
   // Files changing mid-review (an agent editing/committing while the user
   // reviews) make the snapshot on screen stale. The hook polls the server's
   // cheap fingerprint check; the toolbar shows a non-blocking notice and the
-  // user refreshes when THEY are ready — never automatically (annotations are
-  // line-anchored; rug-pulling the diff under them is worse than staleness).
+  // user refreshes when THEY are ready — unless Live is on, which refreshes
+  // automatically when there is nothing unsent to rug-pull (no draft banner,
+  // no diff load in flight). Draft present -> banner stays, user decides.
+  const [reviewLive, setReviewLive] = useState(() => {
+    try {
+      return localStorage.getItem('plannotator.review-live') === '1'
+        || new URLSearchParams(window.location.search).get('live') === '1';
+    } catch { return false; }
+  });
+  const autoRefreshGuardRef = useRef<() => void>(() => {});
   const diffFreshness = useDiffFreshness({
     // Static patch: the bytes are the session. Nothing can go stale, so the
     // probe would only poll an endpoint with no fingerprint to compare.
@@ -3609,7 +3617,14 @@ const ReviewApp: React.FC = () => {
     snapshotId,
     onAgentCwd: setAgentCwd,
     onBaseBehindRemote: setBaseBehindRemote,
+    autoRefresh: reviewLive,
+    onStale: () => autoRefreshGuardRef.current(),
   });
+  useEffect(() => {
+    try {
+      localStorage.setItem('plannotator.review-live', reviewLive ? '1' : '0');
+    } catch { /* private mode: live still works for this tab */ }
+  }, [reviewLive]);
 
   // "Baseline is behind GitHub · Fetch" — fetch the remote default branch,
   // then recompute the current diff in place (preserving the active file).
@@ -3670,6 +3685,14 @@ const ReviewApp: React.FC = () => {
     // New commits are part of what went stale — bring the rail along.
     if (showCommitsPanel) commitsView.refresh();
   }, [prMetadata, prDiffScope, prPatchIncomplete, handlePRDiffScopeSelect, handleLoadFullDiff, fetchDiffSwitch, diffType, selectedBase, showCommitsPanel, commitsView.refresh]);
+  // Live-mode guard: auto-refresh only when safe. Runs on the poll tick via
+  // the hook's onStale (once per fingerprint); the effect re-arms it every
+  // render so it always sees fresh loading/draft state.
+  useEffect(() => {
+    autoRefreshGuardRef.current = () => {
+      if (!isLoadingDiff && !draftBanner) handleRefreshStaleDiff();
+    };
+  });
 
   // Select annotation - switches file if needed and scrolls to it.
   // isAllFilesActive is read through the ref (declared with the state): this
@@ -5262,6 +5285,17 @@ const ReviewApp: React.FC = () => {
                 {/* Diff staleness notice — files changed since this snapshot
                     was computed (agent editing mid-review). Non-blocking; the
                     user refreshes when ready. */}
+                {!isCompactTouchLayout && !isLoadingDiff && (
+                  <button
+                    onClick={() => setReviewLive(v => !v)}
+                    className={`flex items-center gap-1.5 text-xs px-2 py-1 rounded border transition-colors ${reviewLive ? 'text-emerald-700 dark:text-emerald-300 bg-emerald-500/10 border-emerald-500/25' : 'text-gray-500 dark:text-gray-400 bg-transparent border-gray-500/25 hover:text-gray-700 dark:hover:text-gray-200'}`}
+                    title={reviewLive ? 'Live refresh on: diff reloads when files change (skipped while you have unsent drafts)' : 'Live refresh off: turn on to reload the diff automatically when files change'}
+                    aria-pressed={reviewLive}
+                  >
+                    <span className={`inline-block w-1.5 h-1.5 rounded-full ${reviewLive ? 'bg-emerald-500 animate-pulse' : 'bg-current opacity-40'}`} aria-hidden />
+                    Live
+                  </button>
+                )}
                 {!isCompactTouchLayout && diffFreshness.isStale && !isLoadingDiff && (
                   <div className="flex items-center gap-2 text-xs text-amber-700 dark:text-amber-300 px-2 py-1 bg-amber-500/10 rounded border border-amber-500/25">
                     <span className="hidden md:inline">Diff out of date</span>
