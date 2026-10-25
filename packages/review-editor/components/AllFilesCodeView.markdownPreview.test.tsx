@@ -23,7 +23,7 @@ let renderedItems: Array<{ id: string; element: HTMLElement }> = [];
 let viewport: HTMLElement | undefined;
 let fakeEditingItemId: string | null = null;
 const scrolls: string[] = [];
-const updatedItems: Array<{ id: string; fileDiff: { hunks: unknown[]; cacheKey?: string } }> = [];
+const updatedItems: Array<{ id: string; collapsed?: boolean; fileDiff: { hunks: unknown[]; cacheKey?: string } }> = [];
 
 const realPierreDiffs = { ...(await import('@pierre/diffs')) };
 const realPierreDiffsReact = { ...(await import('@pierre/diffs/react')) };
@@ -66,8 +66,8 @@ mock.module('@pierre/diffs/react', () => ({
     useImperativeHandle(ref, () => ({
       addItems: () => {},
       getItem: (id: string) => itemsRef.current.get(id),
-      updateItem: (item: { id: string; fileDiff: { hunks: unknown[]; cacheKey?: string } }) => {
-        updatedItems.push({ id: item.id, fileDiff: item.fileDiff });
+      updateItem: (item: { id: string; collapsed?: boolean; fileDiff: { hunks: unknown[]; cacheKey?: string } }) => {
+        updatedItems.push({ id: item.id, collapsed: item.collapsed, fileDiff: item.fileDiff });
         itemsRef.current.set(item.id, item);
         return true;
       },
@@ -257,11 +257,41 @@ describe.if(hasDom)('Markdown previews in the all-files view', () => {
     await rerender({ markdownPreview: preview([mdFile.path], calls) });
     const on = updatedItems.filter((u) => u.id === mdFile.path).at(-1)!;
     expect(on.fileDiff.hunks).toEqual([]);
+    // The card folds to its header slot (which holds the preview) so Pierre
+    // lays it out without row estimation.
+    expect(on.collapsed).toBe(true);
 
     await rerender({ markdownPreview: preview([], calls) });
     const off = updatedItems.filter((u) => u.id === mdFile.path).at(-1)!;
     expect(off.fileDiff.hunks.length).toBe(1);
+    expect(off.collapsed).toBe(false);
     expect(updatedItems.some((u) => u.id === codeFile.path)).toBe(false);
+  });
+
+  test('previewing folds the card and Source restores its prior folded state', async () => {
+    const calls: Array<[string, string]> = [];
+    await render({ defaultCollapsed: true, markdownPreview: preview([], calls) });
+    expect(seededItem(mdFile.path).collapsed).toBe(true);
+    expect(seededItem(codeFile.path).collapsed).toBe(true);
+
+    await rerender({ defaultCollapsed: true, markdownPreview: preview([mdFile.path], calls) });
+    const on = updatedItems.filter((u) => u.id === mdFile.path).at(-1)!;
+    expect(on.collapsed).toBe(true);
+
+    await rerender({ defaultCollapsed: true, markdownPreview: preview([], calls) });
+    const off = updatedItems.filter((u) => u.id === mdFile.path).at(-1)!;
+    expect(off.collapsed).toBe(true);
+    expect(off.fileDiff.hunks.length).toBe(1);
+  });
+
+  test('a seeded preview starts folded to its header slot', async () => {
+    const calls: Array<[string, string]> = [];
+    await render({ markdownPreview: preview([mdFile.path], calls) });
+    expect(seededItem(mdFile.path).collapsed).toBe(true);
+    expect(seededItem(codeFile.path).collapsed).not.toBe(true);
+
+    const header = await mountHeader(mdFile.path);
+    expect(header.querySelector(`[data-test-md-preview="${mdFile.path}"]`)).not.toBeNull();
   });
 
   test('a search hit in a previewed file sends it back to Source', async () => {

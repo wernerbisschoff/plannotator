@@ -932,9 +932,14 @@ export const AllFilesCodeView: React.FC<AllFilesCodeViewProps> = ({
   imagePreviewItemIdsRef.current = measuredHeaderItemIds;
 
   // A previewed item carries a hunkless diff; its real one (raw patch, or the
-  // full-content augmentation once it lands) waits here until Source.
+  // full-content augmentation once it lands) waits here until Source. The card
+  // is also folded to its header slot (which holds the preview): Pierre lays
+  // out collapsed items without row estimation, so the zero-hunk diff can
+  // never collapse the list. The pre-preview folded state waits here too and
+  // is restored on Source.
   const fullDiffsRef = useRef(new Map<string, FileDiffMetadata>());
   const previewAppliedRef = useRef(new Set<string>());
+  const previewCollapsedRef = useRef(new Map<string, boolean>());
   // Stable identity of the current diff. Changes whenever the file set or any
   // file's patch CONTENT changes (diff type / base / whitespace / PR switch),
   // and is used as the CodeView `key` to force a remount + fresh seed.
@@ -966,10 +971,14 @@ export const AllFilesCodeView: React.FC<AllFilesCodeViewProps> = ({
     seededPreviewKeyRef.current = fileSetKey;
     fullDiffsRef.current = new Map();
     previewAppliedRef.current = new Set();
+    previewCollapsedRef.current = new Map();
     for (const item of identity.items) {
       if (item.type !== 'diff' || !previewItemIds.has(item.id)) continue;
       fullDiffsRef.current.set(item.id, item.fileDiff);
       item.fileDiff = markdownPreviewFileDiff(item.fileDiff);
+      // Fold to the header slot (see the swap effect below).
+      previewCollapsedRef.current.set(item.id, item.collapsed === true);
+      item.collapsed = true;
       previewAppliedRef.current.add(item.id);
     }
   }
@@ -1284,6 +1293,9 @@ export const AllFilesCodeView: React.FC<AllFilesCodeViewProps> = ({
     // below it upward, jumping the scroll). Diffshub anchor fix.
     const itemTop = viewer.getTopForItem(itemId);
     item.collapsed = item.collapsed !== true;
+    // A fold toggled while previewed amends the pre-preview state that Source
+    // restores, so the restore below never clobbers the toggle.
+    if (previewCollapsedRef.current.has(itemId)) previewCollapsedRef.current.set(itemId, item.collapsed === true);
     item.version = (item.version ?? 0) + 1;
     if (!handle.updateItem(item)) return;
     syncAllCollapsedMirror();
@@ -1302,6 +1314,7 @@ export const AllFilesCodeView: React.FC<AllFilesCodeViewProps> = ({
     if (handle == null || item == null || item.collapsed === true) return;
     editSession.finishIfEditing(itemId);
     item.collapsed = true;
+    if (previewCollapsedRef.current.has(itemId)) previewCollapsedRef.current.set(itemId, true);
     item.version = (item.version ?? 0) + 1;
     handle.updateItem(item);
     syncAllCollapsedMirror();
@@ -1323,6 +1336,7 @@ export const AllFilesCodeView: React.FC<AllFilesCodeViewProps> = ({
       if (item == null || (item.collapsed === true) === collapsed) continue;
       if (collapsed) editSession.finishIfEditing(id);
       item.collapsed = collapsed;
+      if (previewCollapsedRef.current.has(id)) previewCollapsedRef.current.set(id, collapsed);
       item.version = (item.version ?? 0) + 1;
       handle.updateItem(item);
       reportFileCollapsed(id, collapsed);
@@ -1937,11 +1951,19 @@ export const AllFilesCodeView: React.FC<AllFilesCodeViewProps> = ({
         if (id === editSession.editingItemIdRef.current) continue;
         fullDiffsRef.current.set(id, item.fileDiff);
         item.fileDiff = markdownPreviewFileDiff(item.fileDiff);
+        // Fold the card to its header slot (which holds the preview).
+        // Pierre lays out collapsed items header-only, so row estimation over
+        // the zero-hunk diff can never collapse the list. Restored on Source.
+        previewCollapsedRef.current.set(id, item.collapsed === true);
+        item.collapsed = true;
         applied.add(id);
       } else {
         const full = fullDiffsRef.current.get(id);
         if (full) item.fileDiff = full;
         fullDiffsRef.current.delete(id);
+        const wasCollapsed = previewCollapsedRef.current.get(id);
+        if (wasCollapsed !== undefined) item.collapsed = wasCollapsed;
+        previewCollapsedRef.current.delete(id);
         applied.delete(id);
         // The header slot is back to the fixed FileHeader height.
         measuredHeaderHeightsRef.current.delete(id);
@@ -1978,6 +2000,7 @@ export const AllFilesCodeView: React.FC<AllFilesCodeViewProps> = ({
     const item = handle.getItem(itemId);
     if (item != null && item.collapsed === true) {
       item.collapsed = false;
+      previewCollapsedRef.current.delete(itemId);
       item.version = (item.version ?? 0) + 1;
       handle.updateItem(item);
       syncAllCollapsedMirror();
@@ -2878,6 +2901,9 @@ export const AllFilesCodeView: React.FC<AllFilesCodeViewProps> = ({
     const previewControl = markdownPreview;
     const previewable = !!previewControl && previewControl.isPreviewable(file);
     const previewed = previewable && previewItemIdsRef.current.has(item.id);
+    // File-scoped comments ride the header slot, so they stay visible while
+    // the card is folded for a preview (collapsed hides them otherwise).
+    const showFileComments = !collapsed || previewed;
     const allFileComments = fileCommentsByPath.get(filePath) ?? [];
     // Comments made in the preview are highlighted in it.
     const fileComments = previewed ? allFileComments.filter((comment) => !comment.markdownPreview) : allFileComments;
@@ -3004,10 +3030,10 @@ export const AllFilesCodeView: React.FC<AllFilesCodeViewProps> = ({
             dirtyStore={editSession.dirtyStore}
           />
         )}
-        {/* File-scoped comments live in the header (below the path), shown only
-            when the file is expanded. They ride the sticky header — fine for a
-            short guide note; long ones scroll within the banner. */}
-        {!collapsed && fileComments.length > 0 && (
+        {/* File-scoped comments live in the header (below the path), shown when
+            the file is expanded or previewed. They ride the sticky header —
+            fine for a short guide note; long ones scroll within the banner. */}
+        {showFileComments && fileComments.length > 0 && (
           <FileCommentBanner
             comments={fileComments}
             selectedAnnotationId={selectedAnnotationId}
@@ -3021,7 +3047,7 @@ export const AllFilesCodeView: React.FC<AllFilesCodeViewProps> = ({
           />
         )}
         {/* The rendered Markdown, in place of the (hunkless) diff rows. */}
-        {!collapsed && previewed && previewControl!.render({ file, onHeightChange: remeasure })}
+        {previewed && previewControl!.render({ file, onHeightChange: remeasure })}
         {/* This file's own horizontal scrollbar (#1048), riding the sticky
             header so it stays reachable anywhere in a long diff. Absolutely
             positioned on the header's bottom edge so it costs no layout
