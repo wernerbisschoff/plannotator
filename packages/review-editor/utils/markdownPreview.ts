@@ -10,13 +10,13 @@ import { getExtraMarkdownExtensions } from '@plannotator/ui/utils/markdownExtens
 import type { DiffFileStatus } from '../types';
 
 /** Built-in extensions the preview renders as Markdown. */
-const BUILTIN_MARKDOWN_PREVIEW_RE = /\.(md|mdx|markdown)$/i;
+const BUILTIN_MARKDOWN_PREVIEW_RE = /\.(md|mdx|markdown|mmd|mermaid)$/i;
 
 /** Above this many bytes the preview asks before rendering ("Preview anyway"). */
 export const MARKDOWN_PREVIEW_SIZE_LIMIT = 300 * 1024;
 
 /**
- * True when `path` is a Markdown document: `.md`, `.mdx`, `.markdown`, or an
+ * True when `path` is a Markdown or Mermaid document: `.md`, `.mdx`, `.markdown`, `.mmd`, `.mermaid`, or an
  * extension the user listed in `markdownExtensions` (config.json, shipped
  * with the diff payload).
  */
